@@ -1,6 +1,6 @@
 # Bilibili transcribe
 
-A minimal Bilibili video info extractor, packaged as an installable **Claude Code plugin**. Give it a video ID and it returns the **bvid / title / description / audio URL**, and by default downloads the audio into memory and transcribes it locally with [FunASR](https://github.com/modelscope/FunASR) (Alibaba's SenseVoiceSmall).
+A minimal Bilibili video info extractor, packaged as an installable **agent skill**. Give it a video ID and it returns the **bvid / title / description / audio URL**, and by default downloads the audio into memory and transcribes it locally with [FunASR](https://github.com/modelscope/FunASR) (Alibaba's SenseVoiceSmall).
 
 ## What it does
 
@@ -17,6 +17,29 @@ Take a BV id (or av id) as input and print JSON:
 ```
 
 `audio_url` points to the video's **lowest-bitrate audio stream** (64K AAC), which is ideal for speech transcription. The script downloads that stream into a buffer (no file written to disk) and runs FunASR's SenseVoiceSmall locally to produce `transcript`. The `transcript` field is omitted in `--dry-run` mode.
+
+## Install (as an agent skill)
+
+Install the skill into your agent with the [`skills`](https://github.com/vercel-labs/skills) CLI — no clone or global install needed:
+
+```bash
+# Install the skill from this GitHub repo
+npx skills add Rickenbacker620/bilibili-transcribe
+```
+
+This drops the skill into your project's skills directory (e.g. `.claude/skills/bilibili-transcribe/`), where your agent picks it up automatically. Once installed, just give the agent a Bilibili link or `BV`/`av` id and it runs the skill.
+
+Useful variations:
+
+```bash
+# See which skills the repo exposes before installing
+npx skills add Rickenbacker620/bilibili-transcribe --list
+
+# Install only this skill by name
+npx skills add Rickenbacker620/bilibili-transcribe --skill bilibili-transcribe
+```
+
+You still need [uv](https://docs.astral.sh/uv/) on your `PATH` — the skill shells out to `uv run` to fetch dependencies and run the transcription script (see [Dependencies](#dependencies)).
 
 ## Dependencies
 
