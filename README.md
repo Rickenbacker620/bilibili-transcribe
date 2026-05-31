@@ -1,15 +1,6 @@
-# bnowledge — Bilibili transcribe
+# Bilibili transcribe
 
 A minimal Bilibili video info extractor, packaged as an installable **Claude Code plugin**. Give it a video ID and it returns the **bvid / title / description / audio URL**, and by default downloads the audio into memory and transcribes it locally with [FunASR](https://github.com/modelscope/FunASR) (Alibaba's SenseVoiceSmall).
-
-## Install as a Claude Code plugin
-
-```text
-/plugin marketplace add Rickenbacker620/bnowledge
-/plugin install bilibili-transcribe@bnowledge
-```
-
-Once installed, just ask Claude to transcribe a Bilibili link or BV id and the `bilibili-transcribe` skill handles the rest. The skill runs [`skills/bilibili-transcribe/scripts/bili_info.py`](skills/bilibili-transcribe/scripts/bili_info.py), which declares its own dependencies inline (PEP 723), so [uv](https://docs.astral.sh/uv/) installs them on first run — no manual setup.
 
 ## What it does
 
