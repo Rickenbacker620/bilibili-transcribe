@@ -1,6 +1,6 @@
 # Bilibili transcribe
 
-A minimal Bilibili video info extractor, packaged as an installable **agent skill**. Give it a video ID and it returns the **bvid / title / description / audio URL**, and by default downloads the audio into memory and transcribes it locally with [FunASR](https://github.com/modelscope/FunASR) (Alibaba's SenseVoiceSmall).
+A minimal Bilibili video info extractor, packaged as an installable **agent skill**. Give it a video ID and it returns the **bvid / title / description / audio URL**, and by default downloads the audio into memory and transcribes it locally with [FunASR](https://github.com/modelscope/FunASR) (Tongyi Lab's Fun-ASR-Nano), producing both a full transcript and timestamped segments.
 
 ## What it does
 
@@ -12,11 +12,17 @@ Take a BV id (or av id) as input and print JSON:
   "title": "Video title",
   "desc": "Video description",
   "audio_url": "https://....m4s?...",
-  "transcript": "The transcribed speech ..."
+  "transcript": "The full transcribed speech ...",
+  "segments": [
+    {"start_ms": 140, "end_ms": 1700, "text": "第一句字幕，"},
+    {"start_ms": 1700, "end_ms": 2960, "text": "第二句字幕。"}
+  ]
 }
 ```
 
-`audio_url` points to the video's **lowest-bitrate audio stream** (64K AAC), which is ideal for speech transcription. The script downloads that stream into a buffer (no file written to disk) and runs FunASR's SenseVoiceSmall locally to produce `transcript`. The `transcript` field is omitted in `--dry-run` mode.
+`audio_url` points to the video's **lowest-bitrate audio stream** (64K AAC), which is ideal for speech transcription. The script downloads that stream into a buffer (no file written to disk) and runs FunASR's Fun-ASR-Nano locally to produce `transcript` (full text) and `segments` (subtitle-sized chunks with start/end times in milliseconds). Both are omitted in `--dry-run` mode.
+
+> **Note on timestamps:** Fun-ASR-Nano's own timestamp output is still an upstream TODO, so segment timing comes from FunASR's generic CTC forced-alignment. `start` times are reliable; a segment `end` can occasionally be stretched at a voice-activity boundary. Good for subtitles/navigation, not frame-accurate.
 
 ## Install (as an agent skill)
 
@@ -43,7 +49,7 @@ You still need [uv](https://docs.astral.sh/uv/) on your `PATH` — the skill she
 
 ## Dependencies
 
-Declared inline in the script via PEP 723 (`requests`, `tqdm`, `funasr`, `torch`, `torchaudio`, `av`, `numpy`) and resolved automatically by [uv](https://docs.astral.sh/uv/) — there is no `pyproject.toml`/lockfile to manage. FunASR decodes the audio via PyAV, so no separate `ffmpeg` binary is required.
+Declared inline in the script via PEP 723 (`requests`, `tqdm`, `funasr`, `torch`, `torchaudio`, `av`, `numpy`, plus `regex`, `safetensors`, `tiktoken` for Fun-ASR-Nano's tokenizer) and resolved automatically by [uv](https://docs.astral.sh/uv/) — there is no `pyproject.toml`/lockfile to manage. FunASR decodes the audio via PyAV, so no separate `ffmpeg` binary is required.
 
 ## Usage (standalone)
 
@@ -58,8 +64,8 @@ uv run --no-project "$SCRIPT" BV1onNWz9EHB
 # Only print metadata; skip the download and transcription
 uv run --no-project "$SCRIPT" BV1onNWz9EHB --dry-run
 
-# Choose a FunASR model (default: iic/SenseVoiceSmall), language, or device
-uv run --no-project "$SCRIPT" BV1onNWz9EHB --language zh --device cuda:0
+# Choose a FunASR model (default: FunAudioLLM/Fun-ASR-Nano-2512), language, or device
+uv run --no-project "$SCRIPT" BV1onNWz9EHB --language 中文 --device cuda:0
 
 # av ids are also supported and converted to BV automatically
 uv run --no-project "$SCRIPT" av114707520295544

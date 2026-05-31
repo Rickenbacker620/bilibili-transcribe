@@ -5,7 +5,10 @@
 #     "av>=17.0.1",
 #     "funasr>=1.3.9",
 #     "numpy",
+#     "regex",
 #     "requests>=2.34.2",
+#     "safetensors",
+#     "tiktoken",
 #     "torch>=2.12.0",
 #     "torchaudio>=2.11.0",
 #     "tqdm>=4.67.3",
@@ -14,11 +17,12 @@
 """
 bili_info.py — fetch a Bilibili video's: bvid / title / description / audio URL
 
-By default it also downloads the audio and transcribes it with FunASR
-(Alibaba's SenseVoiceSmall). Pass --dry-run to skip the download/transcription
-and only print the metadata.
+By default it also downloads the audio and transcribes it locally with FunASR's
+Fun-ASR-Nano-2512 (Tongyi Lab), producing both a full transcript and a list of
+timestamped segments. Pass --dry-run to skip the download/transcription and only
+print the metadata.
 
-Usage: python bili_info.py BV1xxxxxxx [--dry-run] [--model MODEL]
+Usage: python bili_info.py BV1xxxxxxx [--dry-run] [--model MODEL] [--language LANG]
 Dependencies: requests, tqdm; funasr + torch + av (only when not in --dry-run)
 """
 from __future__ import annotations
@@ -153,38 +157,95 @@ def _decode_pcm(audio: bytes, rate: int = 16000):
     return pcm.astype(np.float32) / 32768.0
 
 
-def transcribe(audio: bytes, model: str = "iic/SenseVoiceSmall",
-               device: str = "cpu", language: str = "auto") -> str:
-    """Transcribe in-memory audio bytes with FunASR's SenseVoiceSmall.
+# punctuation that ends a subtitle line (kept attached to the line)
+_BREAK = set("。！？；…!?;")          # hard breaks: sentence enders
+_SOFT = set("，、：,:")                # soft breaks: only used if a line gets long
+_MIN_CHARS = 6                         # don't break a line shorter than this
+
+
+def _segment(timestamps: list) -> list:
+    """Turn Fun-ASR-Nano's char-level `timestamps` into subtitle segments.
+
+    Those tokens already carry punctuation (with timing), so we split on
+    sentence-ending marks, falling back to soft marks (comma, etc.) only when a
+    line runs long, so segments stay subtitle-sized without over-fragmenting.
+    End times are then clamped to the next line's start, which hides the
+    occasional inflated end time the CTC alignment emits at VAD-segment seams.
+    """
+    segs, cur = [], None
+
+    def flush():
+        nonlocal cur
+        if cur and cur["text"].strip():
+            segs.append(cur)
+        cur = None
+
+    for t in timestamps:
+        tok = t["token"]
+        if cur is None:
+            cur = {"start": t["start_time"], "end": t["end_time"], "text": ""}
+        cur["end"] = t["end_time"]
+        cur["text"] += tok
+        n = len(cur["text"].strip())
+        if any(c in _BREAK for c in tok) and n >= _MIN_CHARS:
+            flush()
+        elif any(c in _SOFT for c in tok) and n >= 18:
+            flush()
+    flush()
+
+    out = [{"start_ms": round(s["start"] * 1000),
+            "end_ms": round(s["end"] * 1000),
+            "text": s["text"].strip()} for s in segs]
+    for a, b in zip(out, out[1:]):  # clamp each end to the next start
+        if a["end_ms"] > b["start_ms"]:
+            a["end_ms"] = b["start_ms"]
+    return out
+
+
+def transcribe(audio: bytes, model: str = "FunAudioLLM/Fun-ASR-Nano-2512",
+               device: str = "cpu", language: str | None = None) -> tuple[str, list]:
+    """Transcribe in-memory audio bytes with FunASR's Fun-ASR-Nano-2512.
 
     The .m4s buffer is decoded to a PCM array (see _decode_pcm) and fed to the
-    model directly. FunASR's own logging/progress is routed to stderr so stdout
-    stays clean JSON.
+    model. Returns (full_text, segments) where segments is a list of
+    {start_ms, end_ms, text}. FunASR's own logging/progress is routed to stderr
+    so stdout stays clean JSON.
+
+    Timestamps note: Fun-ASR-Nano's own timestamp output is still upstream TODO;
+    the per-token timing here comes from FunASR's generic CTC forced-alignment
+    wrapped around the model by AutoModel — reliable enough for navigation/
+    subtitles, but treat it as best-effort rather than frame-accurate.
     """
     import contextlib
 
     from funasr import AutoModel
-    from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
     pcm = _decode_pcm(audio)
     with contextlib.redirect_stdout(sys.stderr):
         asr = AutoModel(
             model=model,
+            hub="hf",
+            trust_remote_code=True,
             vad_model="fsmn-vad",
             vad_kwargs={"max_single_segment_time": 30000},
             device=device,
             disable_update=True,
         )
-        res = asr.generate(
-            input=pcm,
-            cache={},
-            language=language,
-            use_itn=True,
-            batch_size_s=60,
-            merge_vad=True,
-            merge_length_s=15,
-        )
-    return rich_transcription_postprocess(res[0]["text"])
+        gen = dict(input=pcm, cache={}, batch_size=1, itn=True,
+                   sentence_timestamp=True)
+        if language:
+            gen["language"] = language          # e.g. 中文 / 英文 / 日文
+        res = asr.generate(**gen)
+
+    r = res[0]
+    timestamps = r.get("timestamps") or []
+    if timestamps:
+        segments = _segment(timestamps)
+    else:  # models with native sentence timing (e.g. paraformer)
+        segments = [{"start_ms": s.get("start"), "end_ms": s.get("end"),
+                     "text": (s.get("text") or "").strip()}
+                    for s in (r.get("sentence_info") or [])]
+    return r.get("text", ""), segments
 
 
 def main():
@@ -192,10 +253,10 @@ def main():
     ap.add_argument("id", help="BV id or av id")
     ap.add_argument("--dry-run", action="store_true",
                     help="only print the metadata; skip the audio download and transcription")
-    ap.add_argument("--model", default="iic/SenseVoiceSmall",
-                    help="FunASR model to transcribe with (default: iic/SenseVoiceSmall)")
-    ap.add_argument("--language", default="auto",
-                    help="language hint for SenseVoice: auto/zh/en/yue/ja/ko (default: auto)")
+    ap.add_argument("--model", default="FunAudioLLM/Fun-ASR-Nano-2512",
+                    help="FunASR model to transcribe with (default: FunAudioLLM/Fun-ASR-Nano-2512)")
+    ap.add_argument("--language", default=None,
+                    help="optional language hint: 中文/英文/日文 (default: auto-detect)")
     ap.add_argument("--device", default="cpu",
                     help="torch device for inference, e.g. cpu / cuda:0 (default: cpu)")
     args = ap.parse_args()
@@ -213,7 +274,8 @@ def main():
         if not data["audio_url"]:
             raise SystemExit("No audio stream found for this video")
         audio = bili.download_audio(data["audio_url"], vid)
-        data["transcript"] = transcribe(audio, args.model, args.device, args.language)
+        data["transcript"], data["segments"] = transcribe(
+            audio, args.model, args.device, args.language)
 
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
