@@ -202,6 +202,32 @@ def _segment(timestamps: list) -> list:
     return out
 
 
+def _patch_funasr_tokenizer() -> None:
+    """Let Fun-ASR-Nano re-encode its own control tokens (e.g. ``<|no|>``).
+
+    During CTC rescoring the model feeds its decoded text back through the
+    Whisper tokenizer's ``encode``, which is tiktoken under the hood. tiktoken
+    rejects special tokens by default, so any utterance whose CTC text contains
+    a control token (``<|no|>``, language/itn tags, …) raises
+    ``ValueError: Encountered text corresponding to disallowed special token``
+    and aborts the whole transcription. Defaulting ``allowed_special="all"``
+    treats those marks as the special tokens they are. Upstream bug in
+    funasr 1.3.9; harmless to keep once they fix it.
+    """
+    from funasr.models.sense_voice.whisper_lib import tokenizer as _tk
+
+    if getattr(_tk.Tokenizer.encode, "_allows_special", False):
+        return
+    _orig_encode = _tk.Tokenizer.encode
+
+    def encode(self, text, **kwargs):
+        kwargs.setdefault("allowed_special", "all")
+        return _orig_encode(self, text, **kwargs)
+
+    encode._allows_special = True
+    _tk.Tokenizer.encode = encode
+
+
 def transcribe(audio: bytes, model: str = "FunAudioLLM/Fun-ASR-Nano-2512",
                device: str = "cpu", language: str | None = None) -> tuple[str, list]:
     """Transcribe in-memory audio bytes with FunASR's Fun-ASR-Nano-2512.
@@ -220,6 +246,7 @@ def transcribe(audio: bytes, model: str = "FunAudioLLM/Fun-ASR-Nano-2512",
 
     from funasr import AutoModel
 
+    _patch_funasr_tokenizer()
     pcm = _decode_pcm(audio)
     with contextlib.redirect_stdout(sys.stderr):
         asr = AutoModel(
